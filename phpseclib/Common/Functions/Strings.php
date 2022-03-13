@@ -38,9 +38,8 @@ abstract class Strings
      */
     public static function shift(&$string, $index = 1)
     {
-        $substr = substr($string, 0, $index);
         $string = substr($string, $index);
-        return $substr;
+        return substr($string, 0, $index);
     }
 
     /**
@@ -55,9 +54,8 @@ abstract class Strings
      */
     public static function pop(&$string, $index = 1)
     {
-        $substr = substr($string, -$index);
         $string = substr($string, 0, -$index);
-        return $substr;
+        return substr($string, -$index);
     }
 
     /**
