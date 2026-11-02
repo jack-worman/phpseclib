@@ -1,0 +1,20 @@
+name: Repro
+on: push
+jobs:
+    repro:
+        name: ${{ matrix.os }}, PHP ${{ matrix.php-version }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [windows-latest, ubuntu-latest]
+                php-version: ['8.2', '8.3', '8.4', '8.5', '8.6']
+        steps:
+            - uses: actions/checkout@v7
+            - uses: shivammathur/setup-php@v2
+              with:
+                  php-version: ${{ matrix.php-version }}
+            - shell: bash
+              run: |
+                  php -v
+                  for i in 1 2 3; do php -n repro.php; done
