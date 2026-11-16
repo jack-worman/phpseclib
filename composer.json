@@ -77,5 +77,12 @@
             "phpseclib/bootstrap.php",
             "phpseclib/Crypt/Random.php"
         ]
+    },
+    "config": {
+        "policy": {
+            "cooldown": {
+                "period": "7 days"
+            }
+        }
     }
 }
