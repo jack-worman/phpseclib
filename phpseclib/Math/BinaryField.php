@@ -73,43 +73,48 @@ class BinaryField extends FiniteField
         }
         $modulo = static::base2ToBase256(strrev($val));
 
-        $mStart = 2 * $m - 2;
-        $t = ceil($m / 8);
+        $this->instanceID = self::$instanceCounter++;
+        Integer::setModulo($this->instanceID, $modulo);
+        Integer::setRecurringModuloFunction($this->instanceID, self::reducer($m, rtrim(substr($val, 0, -1), '0')));
+
+        $this->randomMax = new BigInteger($modulo, 2);
+    }
+
+    /**
+     * Returns a function that reduces a polynomial modulo z^m + r(z)
+     *
+     * Implements algorithm 2.40 (in section 2.3.5) in "Guide to Elliptic Curve Cryptography" with W = 8.
+     *
+     * @param int $m
+     * @param string $r the coefficients of r(z), lowest first
+     * @return callable
+     */
+    private static function reducer($m, $r)
+    {
+        $t = (int) ceil($m / 8);
+        // the length of the longest product of two field elements
+        $pad = (int) ceil((2 * $m - 1) / 8);
         $finalMask = chr((1 << ($m % 8)) - 1);
         if ($finalMask == "\0") {
             $finalMask = "\xFF";
         }
-        $bitLen = $mStart + 1;
-        $pad = ceil($bitLen / 8);
-        $h = $bitLen & 7;
-        $h = $h ? 8 - $h : 0;
 
-        $r = rtrim(substr($val, 0, -1), '0');
+        // $u[$k] is r(z) * z^k
         $u = [static::base2ToBase256(strrev($r))];
         for ($i = 1; $i < 8; $i++) {
             $u[] = static::base2ToBase256(strrev(str_repeat('0', $i) . $r));
         }
 
-        // implements algorithm 2.40 (in section 2.3.5) in "Guide to Elliptic Curve Cryptography"
-        // with W = 8
-        $reduce = function ($c) use ($u, $mStart, $m, $t, $finalMask, $pad, $h) {
-            $c = str_pad($c, $pad, "\0", STR_PAD_LEFT);
-            for ($i = $mStart; $i >= $m;) {
-                $g = $h >> 3;
-                $mask = $h & 7;
-                $mask = $mask ? 1 << (7 - $mask) : 0x80;
-                for (; $mask > 0; $mask >>= 1, $i--, $h++) {
-                    if (ord($c[$g]) & $mask) {
-                        $temp = $i - $m;
-                        $j = $temp >> 3;
-                        $k = $temp & 7;
-                        $t1 = $j ? substr($c, 0, -$j) : $c;
-                        $length = strlen($t1);
-                        if ($length) {
-                            $t2 = str_pad($u[$k], $length, "\0", STR_PAD_LEFT);
-                            $temp = $t1 ^ $t2;
-                            $c = $j ? substr_replace($c, $temp, 0, $length) : $temp;
-                        }
+        $fold = static function ($c) use ($u, $m, $t, $finalMask, $pad) {
+            $length = max(strlen($c), $pad);
+            // bit $i is bit $i & 7 of the byte $i >> 3 bytes from the right
+            $c = str_pad($c, $length, "\0", STR_PAD_LEFT);
+            for ($i = 8 * $length - 1; $i >= $m; $i--) {
+                if ((ord($c[$length - 1 - ($i >> 3)]) >> ($i & 7)) & 1) {
+                    $temp = $u[($i - $m) & 7];
+                    if (strlen($temp)) {
+                        $start = $length - (($i - $m) >> 3) - strlen($temp);
+                        $c = substr_replace($c, substr($c, $start, strlen($temp)) ^ $temp, $start, strlen($temp));
                     }
                 }
             }
@@ -120,11 +125,20 @@ class BinaryField extends FiniteField
             return ltrim($c, "\0");
         };
 
-        $this->instanceID = self::$instanceCounter++;
-        Integer::setModulo($this->instanceID, $modulo);
-        Integer::setRecurringModuloFunction($this->instanceID, $reduce);
-
-        $this->randomMax = new BigInteger($modulo, 2);
+        return static function ($c) use ($fold, $pad) {
+            $c = ltrim($c, "\0");
+            $length = strlen($c);
+            if ($length <= $pad) {
+                return $fold($c);
+            }
+            // each fold copies the whole string, so longer input is folded in 64-byte steps
+            $i = $length % 64 ?: 64;
+            $result = $fold(substr($c, 0, $i));
+            for (; $i < $length; $i += 64) {
+                $result = $fold($result . substr($c, $i, 64));
+            }
+            return $result;
+        };
     }
 
     /**
