@@ -43,6 +43,13 @@ class BinaryField extends FiniteField
     private $randomMax;
 
     /**
+     * Reduction functions, shared by all fields with the same reduction polynomial
+     *
+     * @var callable[]
+     */
+    private static $reducers = [];
+
+    /**
      * Default constructor
      */
     public function __construct(...$indices)
@@ -73,9 +80,13 @@ class BinaryField extends FiniteField
         }
         $modulo = static::base2ToBase256(strrev($val));
 
+        if (!isset(self::$reducers[$modulo])) {
+            self::$reducers[$modulo] = self::reducer($m, rtrim(substr($val, 0, -1), '0'));
+        }
+
         $this->instanceID = self::$instanceCounter++;
         Integer::setModulo($this->instanceID, $modulo);
-        Integer::setRecurringModuloFunction($this->instanceID, self::reducer($m, rtrim(substr($val, 0, -1), '0')));
+        Integer::setRecurringModuloFunction($this->instanceID, self::$reducers[$modulo]);
 
         $this->randomMax = new BigInteger($modulo, 2);
     }
