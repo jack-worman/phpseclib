@@ -118,16 +118,43 @@ class BinaryField extends FiniteField
             $u[] = static::base2ToBase256(strrev(str_repeat('0', $i) . $r));
         }
 
-        $fold = static function ($c) use ($u, $m, $t, $finalMask, $pad) {
+        // folding a whole byte at once only works if every bit it folds into lands below that byte
+        list($table, $width) = $m >= strlen($r) + 7 ? self::foldTable($r, $m) : [null, 0];
+        $q0 = $m >> 3;
+        $partial = $m & 7;
+
+        $fold = static function ($c) use ($u, $m, $t, $finalMask, $pad, $table, $width, $q0, $partial) {
             $length = max(strlen($c), $pad);
-            // bit $i is bit $i & 7 of the byte $i >> 3 bytes from the right
-            $c = str_pad($c, $length, "\0", STR_PAD_LEFT);
-            for ($i = 8 * $length - 1; $i >= $m; $i--) {
-                if ((ord($c[$length - 1 - ($i >> 3)]) >> ($i & 7)) & 1) {
-                    $temp = $u[($i - $m) & 7];
-                    if (strlen($temp)) {
-                        $start = $length - (($i - $m) >> 3) - strlen($temp);
-                        $c = substr_replace($c, substr($c, $start, strlen($temp)) ^ $temp, $start, strlen($temp));
+            if (isset($table)) {
+                // bytes are numbered from the right, so byte $q holds the bits 8 * $q through 8 * $q + 7
+                $c = str_pad($c, $length + $width, "\0", STR_PAD_LEFT);
+                $last = $length + $width - 1;
+                for ($q = $length - 1; $q >= $q0 && ($q > $q0 || !$partial); $q--) {
+                    $v = ord($c[$last - $q]);
+                    if ($v) {
+                        $start = $length - ((8 * $q - $m) >> 3);
+                        $c = substr_replace($c, substr($c, $start, $width) ^ $table[$v], $start, $width);
+                    }
+                }
+                if ($partial) {
+                    $v = ord($c[$last - $q0]);
+                    for ($b = $partial; $b < 8; $b++) {
+                        $temp = $u[$b - $partial];
+                        if (($v >> $b) & 1 && strlen($temp)) {
+                            $c = substr_replace($c, substr($c, -strlen($temp)) ^ $temp, -strlen($temp));
+                        }
+                    }
+                }
+            } else {
+                // bit $i is bit $i & 7 of the byte $i >> 3 bytes from the right
+                $c = str_pad($c, $length, "\0", STR_PAD_LEFT);
+                for ($i = 8 * $length - 1; $i >= $m; $i--) {
+                    if ((ord($c[$length - 1 - ($i >> 3)]) >> ($i & 7)) & 1) {
+                        $temp = $u[($i - $m) & 7];
+                        if (strlen($temp)) {
+                            $start = $length - (($i - $m) >> 3) - strlen($temp);
+                            $c = substr_replace($c, substr($c, $start, strlen($temp)) ^ $temp, $start, strlen($temp));
+                        }
                     }
                 }
             }
@@ -155,6 +182,39 @@ class BinaryField extends FiniteField
             }
             return $result;
         };
+    }
+
+    /**
+     * Precomputes, for every byte value, what folding a byte of bits at or above z^m adds
+     *
+     * $r holds the coefficients of the reduction polynomial below z^m, lowest first. A byte that
+     * starts at bit 8q contributes r(z) * z^(8q - m + b) for each bit b it has set, which is
+     * table[byte] shifted left by (8q - m) >> 3 bytes, since the table includes the (8q - m) % 8 bit shift.
+     *
+     * @param string $r
+     * @param int $m
+     * @return array the table and the length of its entries
+     */
+    private static function foldTable($r, $m)
+    {
+        $shift = (8 - $m % 8) % 8;
+        $bits = [];
+        for ($b = 0; $b < 8; $b++) {
+            $bits[$b] = static::base2ToBase256(strrev(str_repeat('0', $shift + $b) . $r));
+        }
+        $width = max(array_map('strlen', $bits));
+        foreach ($bits as $b => $value) {
+            $bits[$b] = str_pad($value, $width, "\0", STR_PAD_LEFT);
+        }
+        $table = [str_repeat("\0", $width)];
+        for ($v = 1; $v < 256; $v++) {
+            $b = 0;
+            while (!(($v >> $b) & 1)) {
+                $b++;
+            }
+            $table[$v] = $table[$v & ($v - 1)] ^ $bits[$b];
+        }
+        return [$table, $width];
     }
 
     /**
