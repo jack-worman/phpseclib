@@ -84,6 +84,17 @@ class BinaryFieldTest extends PhpseclibTestCase
         }
     }
 
+    public function testRandomIntegerCoversTheField()
+    {
+        $field = new BinaryField(163, 7, 6, 3, 0);
+        for ($i = 0; $i < 10; $i++) {
+            $length = $field->randomInteger()->toBigInteger()->getLength();
+            // a uniform draw has 32 bits or fewer with probability 2^-131
+            $this->assertGreaterThan(32, $length);
+            $this->assertLessThanOrEqual(163, $length);
+        }
+    }
+
     public function testFieldsWithTheSamePolynomialShareTheirReduction()
     {
         $a = self::reduction(new BinaryField(163, 7, 6, 3, 0));

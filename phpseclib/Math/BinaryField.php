@@ -88,7 +88,8 @@ class BinaryField extends FiniteField
         Integer::setModulo($this->instanceID, $modulo);
         Integer::setRecurringModuloFunction($this->instanceID, self::$reducers[$modulo]);
 
-        $this->randomMax = new BigInteger($modulo, 2);
+        // the non-zero elements are 1 through 2^m - 1
+        $this->randomMax = new BigInteger(str_repeat('1', $m), 2);
     }
 
     /**
@@ -228,7 +229,7 @@ class BinaryField extends FiniteField
     }
 
     /**
-     * Returns an integer on the finite field between one and the prime modulo
+     * Returns a random non-zero element of the field
      *
      * @return Integer
      */
