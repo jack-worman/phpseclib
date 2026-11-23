@@ -95,6 +95,28 @@ class BinaryFieldTest extends PhpseclibTestCase
         }
     }
 
+    public function testFieldsWithTheSamePolynomialShareTheirReduction()
+    {
+        $a = self::reduction(new BinaryField(163, 7, 6, 3, 0));
+
+        $this->assertSame($a, self::reduction(new BinaryField(163, 3, 6, 7, 0)));
+        $this->assertNotSame($a, self::reduction(new BinaryField(163, 7, 6, 2, 0)));
+    }
+
+    /**
+     * @return callable the function that reduces the field's elements
+     */
+    private static function reduction(BinaryField $field)
+    {
+        $id = call_user_func(\Closure::bind(function ($field) {
+            return $field->instanceID;
+        }, null, 'phpseclib3\Math\BinaryField'), $field);
+        $reduce = call_user_func(\Closure::bind(function () {
+            return static::$reduce;
+        }, null, 'phpseclib3\Math\BinaryField\Integer'));
+        return $reduce[$id];
+    }
+
     private static function pseudoRandomBytes($length, $seed)
     {
         $bytes = '';
