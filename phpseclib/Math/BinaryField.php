@@ -42,6 +42,13 @@ class BinaryField extends FiniteField
     private BigInteger $randomMax;
 
     /**
+     * Reduction functions, shared by all fields with the same reduction polynomial
+     *
+     * @var array<string, \Closure>
+     */
+    private static array $reducers = [];
+
+    /**
      * Default constructor
      */
     public function __construct(int ...$indices)
@@ -72,42 +79,78 @@ class BinaryField extends FiniteField
         }
         $modulo = static::base2ToBase256(strrev($val));
 
-        $mStart = 2 * $m - 2;
+        if (!isset(self::$reducers[$modulo])) {
+            self::$reducers[$modulo] = self::reducer($m, rtrim(substr($val, 0, -1), '0'));
+        }
+
+        $this->instanceID = self::$instanceCounter++;
+        Integer::setModulo($this->instanceID, $modulo);
+        Integer::setRecurringModuloFunction($this->instanceID, self::$reducers[$modulo]);
+
+        // the non-zero elements are 1 through 2^m - 1
+        $this->randomMax = new BigInteger(str_repeat('1', $m), 2);
+    }
+
+    /**
+     * Returns a function that reduces a polynomial modulo z^m + r(z)
+     *
+     * Implements algorithm 2.40 (in section 2.3.5) in "Guide to Elliptic Curve Cryptography" with W = 8.
+     *
+     * @param string $r the coefficients of r(z), lowest first
+     */
+    private static function reducer(int $m, string $r): \Closure
+    {
         $t = (int) ceil($m / 8);
+        // the length of the longest product of two field elements
+        $pad = (int) ceil((2 * $m - 1) / 8);
         $finalMask = chr((1 << ($m % 8)) - 1);
         if ($finalMask == "\0") {
             $finalMask = "\xFF";
         }
-        $bitLen = $mStart + 1;
-        $pad = (int) ceil($bitLen / 8);
-        $h = $bitLen & 7;
-        $h = $h ? 8 - $h : 0;
+        $topBits = ~ord($finalMask) & 0xFF;
 
-        $r = rtrim(substr($val, 0, -1), '0');
+        // $u[$k] is r(z) * z^k
         $u = [static::base2ToBase256(strrev($r))];
         for ($i = 1; $i < 8; $i++) {
             $u[] = static::base2ToBase256(strrev(str_repeat('0', $i) . $r));
         }
 
-        // implements algorithm 2.40 (in section 2.3.5) in "Guide to Elliptic Curve Cryptography"
-        // with W = 8
-        $reduce = function (string $c) use ($u, $mStart, $m, $t, $finalMask, $pad, $h): string {
-            $c = str_pad($c, $pad, "\0", STR_PAD_LEFT);
-            for ($i = $mStart; $i >= $m;) {
-                $g = $h >> 3;
-                $mask = $h & 7;
-                $mask = $mask ? 1 << (7 - $mask) : 0x80;
-                for (; $mask > 0; $mask >>= 1, $i--, $h++) {
-                    if (ord($c[$g]) & $mask) {
-                        $temp = $i - $m;
-                        $j = $temp >> 3;
-                        $k = $temp & 7;
-                        $t1 = $j ? substr($c, 0, -$j) : $c;
-                        $length = strlen($t1);
-                        if ($length) {
-                            $t2 = str_pad($u[$k], $length, "\0", STR_PAD_LEFT);
-                            $temp = $t1 ^ $t2;
-                            $c = $j ? substr_replace($c, $temp, 0, $length) : $temp;
+        // folding a whole byte at once only works if every bit it folds into lands below that byte
+        [$table, $width] = $m >= strlen($r) + 7 ? self::foldTable($r, $m) : [null, 0];
+        $q0 = $m >> 3;
+        $partial = $m & 7;
+
+        $fold = static function (string $c) use ($u, $m, $t, $finalMask, $pad, $table, $width, $q0, $partial): string {
+            $length = max(strlen($c), $pad);
+            if (isset($table)) {
+                // bytes are numbered from the right, so byte $q holds the bits 8 * $q through 8 * $q + 7
+                $c = str_pad($c, $length + $width, "\0", STR_PAD_LEFT);
+                $last = $length + $width - 1;
+                for ($q = $length - 1; $q >= $q0 && ($q > $q0 || !$partial); $q--) {
+                    $v = ord($c[$last - $q]);
+                    if ($v) {
+                        $start = $length - ((8 * $q - $m) >> 3);
+                        $c = substr_replace($c, substr($c, $start, $width) ^ $table[$v], $start, $width);
+                    }
+                }
+                if ($partial) {
+                    $v = ord($c[$last - $q0]);
+                    for ($b = $partial; $b < 8; $b++) {
+                        $temp = $u[$b - $partial];
+                        if (($v >> $b) & 1 && strlen($temp)) {
+                            $c = substr_replace($c, substr($c, -strlen($temp)) ^ $temp, -strlen($temp));
+                        }
+                    }
+                }
+            } else {
+                // bit $i is bit $i & 7 of the byte $i >> 3 bytes from the right
+                $c = str_pad($c, $length, "\0", STR_PAD_LEFT);
+                for ($i = 8 * $length - 1; $i >= $m; $i--) {
+                    if ((ord($c[$length - 1 - ($i >> 3)]) >> ($i & 7)) & 1) {
+                        $temp = $u[($i - $m) & 7];
+                        if (strlen($temp)) {
+                            $start = $length - (($i - $m) >> 3) - strlen($temp);
+                            $c = substr_replace($c, substr($c, $start, strlen($temp)) ^ $temp, $start, strlen($temp));
                         }
                     }
                 }
@@ -119,13 +162,55 @@ class BinaryField extends FiniteField
             return ltrim($c, "\0");
         };
 
-        $this->instanceID = self::$instanceCounter++;
-        Integer::setModulo($this->instanceID, $modulo);
-        Integer::setRecurringModuloFunction($this->instanceID, $reduce);
-
-        $this->randomMax = new BigInteger($modulo, 2);
+        return static function (string $c) use ($fold, $t, $pad, $topBits): string {
+            $c = ltrim($c, "\0");
+            $length = strlen($c);
+            if ($length < $t || ($length == $t && !(ord($c[0]) & $topBits))) {
+                return $c;
+            }
+            if ($length <= $pad) {
+                return $fold($c);
+            }
+            // each fold copies the whole string, so longer input is folded in 64-byte steps
+            $i = $length % 64 ?: 64;
+            $result = $fold(substr($c, 0, $i));
+            for (; $i < $length; $i += 64) {
+                $result = $fold($result . substr($c, $i, 64));
+            }
+            return $result;
+        };
     }
 
+    /**
+     * Precomputes, for every byte value, what folding a byte of bits at or above z^m adds
+     *
+     * $r holds the coefficients of the reduction polynomial below z^m, lowest first. A byte that
+     * starts at bit 8q contributes r(z) * z^(8q - m + b) for each bit b it has set, which is
+     * table[byte] shifted left by (8q - m) >> 3 bytes, since the table includes the (8q - m) % 8 bit shift.
+     *
+     * @return array{0: list<string>, 1: int} the table and the length of its entries
+     */
+    private static function foldTable(string $r, int $m): array
+    {
+        $shift = (8 - $m % 8) % 8;
+        $bits = [];
+        for ($b = 0; $b < 8; $b++) {
+            $bits[$b] = static::base2ToBase256(strrev(str_repeat('0', $shift + $b) . $r));
+        }
+        $width = max(array_map('strlen', $bits));
+        foreach ($bits as $b => $value) {
+            $bits[$b] = str_pad($value, $width, "\0", STR_PAD_LEFT);
+        }
+        $table = [str_repeat("\0", $width)];
+        for ($v = 1; $v < 256; $v++) {
+            $b = 0;
+            while (!(($v >> $b) & 1)) {
+                $b++;
+            }
+            $table[$v] = $table[$v & ($v - 1)] ^ $bits[$b];
+        }
+        return [$table, $width];
+    }
     /**
      * Returns an instance of a dynamically generated PrimeFieldInteger class
      */
@@ -135,7 +220,7 @@ class BinaryField extends FiniteField
     }
 
     /**
-     * Returns an integer on the finite field between one and the prime modulo
+     * Returns a random non-zero element of the field
      */
     public function randomInteger(): Integer
     {

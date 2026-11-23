@@ -119,8 +119,6 @@ final class CurveTest extends PhpseclibTestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('curves')]
     public function testInternalSign($name): void
     {
-        self::skipSlowCurves($name);
-
         $plaintext = 'zzz';
 
         EC::forceEngine('PHP');
@@ -167,8 +165,6 @@ final class CurveTest extends PhpseclibTestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('curves')]
     public function testInternalVerify($name): void
     {
-        self::skipSlowCurves($name);
-
         $plaintext = 'zzz';
 
         $engines = ['libsodium', 'OpenSSL', 'PHP'];
@@ -187,16 +183,6 @@ final class CurveTest extends PhpseclibTestCase
 
         // reset engine
         EC::forceEngine();
-    }
-
-    /**
-     * The 409- and 571-bit binary field curves take 10 to 20 seconds each with the PHP engine.
-     */
-    private static function skipSlowCurves(string $name): void
-    {
-        if (preg_match('#^sect(?:409|571)#', $name)) {
-            self::markTestSkipped('The 409- and 571-bit binary field curves are too slow to test');
-        }
     }
 
     /**
