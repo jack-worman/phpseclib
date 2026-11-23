@@ -109,6 +109,7 @@ class BinaryField extends FiniteField
         if ($finalMask == "\0") {
             $finalMask = "\xFF";
         }
+        $topBits = ~ord($finalMask) & 0xFF;
 
         // $u[$k] is r(z) * z^k
         $u = [static::base2ToBase256(strrev($r))];
@@ -163,9 +164,12 @@ class BinaryField extends FiniteField
             return ltrim($c, "\0");
         };
 
-        return static function ($c) use ($fold, $pad) {
+        return static function ($c) use ($fold, $t, $pad, $topBits) {
             $c = ltrim($c, "\0");
             $length = strlen($c);
+            if ($length < $t || ($length == $t && !(ord($c[0]) & $topBits))) {
+                return $c;
+            }
             if ($length <= $pad) {
                 return $fold($c);
             }
