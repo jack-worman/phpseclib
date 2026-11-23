@@ -249,6 +249,32 @@ class Integer extends Base
     }
 
     /**
+     * Squares a polynomial
+     *
+     * Over GF(2), squaring only spreads the bits out (abcd becomes 0a0b0c0d), so each byte maps to two bytes.
+     *
+     * @param string $x
+     * @return string
+     */
+    private static function polynomialSquare($x)
+    {
+        static $spread;
+        if (!isset($spread)) {
+            $spread4 = function ($n) {
+                return ($n & 1) | (($n & 2) << 1) | (($n & 4) << 2) | (($n & 8) << 3);
+            };
+            // the table is built in a local, so that an interrupted build can't leave half of it behind
+            $table = [];
+            for ($b = 0; $b < 256; $b++) {
+                $table[chr($b)] = chr($spread4($b >> 4)) . chr($spread4($b & 15));
+            }
+            $spread = $table;
+        }
+
+        return strtr($x, $spread);
+    }
+
+    /**
      * Perform polynomial multiplation
      *
      * Uses karatsuba multiplication to reduce x-bit multiplications to a series of 32-bit multiplications
@@ -406,6 +432,10 @@ class Integer extends Base
     public function multiply(self $y)
     {
         static::checkInstance($this, $y);
+
+        if ($y === $this) {
+            return new static($this->instanceID, static::polynomialSquare($this->value));
+        }
 
         return new static($this->instanceID, static::polynomialMultiply($this->value, $y->value));
     }
