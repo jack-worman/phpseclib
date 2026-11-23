@@ -185,40 +185,67 @@ class Integer extends Base
     }
 
     /**
-     * Perform polynomial multiplation in the traditional way
+     * Perform polynomial multiplication a byte of $y at a time
      *
+     * $x times every 4-bit polynomial, at both halves of a byte, is precomputed, so that each byte of $y
+     * takes one XOR. Shifting $x by k bits is strtr() on the two parts of every byte, ORed together.
+     *
+     * @param string $x
+     * @param string $y same length as $x
      * @return string
-     * @link https://en.wikipedia.org/wiki/Finite_field_arithmetic#Multiplication
      */
-    private static function regularPolynomialMultiply($x, $y)
+    private static function windowPolynomialMultiply($x, $y)
     {
-        $precomputed = [ltrim($x, "\0")];
-        $x = strrev(BinaryField::base256ToBase2($x));
-        $y = strrev(BinaryField::base256ToBase2($y));
-        if (strlen($x) == strlen($y)) {
-            $length = strlen($x);
-        } else {
-            $length = max(strlen($x), strlen($y));
-            $x = str_pad($x, $length, '0');
-            $y = str_pad($y, $length, '0');
+        static $bytes, $left, $right;
+        if (!isset($left)) {
+            // the tables are built in locals, so that an interrupted build can't leave half of one behind
+            $all = '';
+            $shiftedLeft = $shiftedRight = [];
+            for ($b = 0; $b < 256; $b++) {
+                $all .= chr($b);
+            }
+            for ($k = 1; $k < 8; $k++) {
+                $shiftedLeft[$k] = $shiftedRight[$k] = '';
+                for ($b = 0; $b < 256; $b++) {
+                    $shiftedLeft[$k] .= chr(($b << $k) & 0xFF);
+                    $shiftedRight[$k] .= chr($b >> (8 - $k));
+                }
+            }
+            $bytes = $all;
+            $right = $shiftedRight;
+            $left = $shiftedLeft;
         }
-        $result = str_repeat('0', 2 * $length - 1);
-        $result = BinaryField::base2ToBase256($result);
-        $size = strlen($result);
-        $x = strrev($x);
 
-        // precompute left shift 1 through 7
-        for ($i = 1; $i < 8; $i++) {
-            $precomputed[$i] = BinaryField::base2ToBase256($x . str_repeat('0', $i));
+        $n = strlen($x);
+        if (!$n) {
+            return '';
         }
-        for ($i = 0; $i < strlen($y); $i++) {
-            if ($y[$i] == '1') {
-                $temp = $precomputed[$i & 7] . str_repeat("\0", $i >> 3);
-                $result ^= str_pad($temp, $size, "\0", STR_PAD_LEFT);
+
+        // $x * z^k for k = 0 through 7, each n + 1 bytes long
+        $shifted = ["\0" . $x];
+        $next = substr($x, 1) . "\0";
+        for ($k = 1; $k < 8; $k++) {
+            $shifted[$k] = chr(ord($x[0]) >> (8 - $k)) . (strtr($x, $bytes, $left[$k]) | strtr($next, $bytes, $right[$k]));
+        }
+
+        // $x times every polynomial of degree 3 or less, and the same times z^4
+        $low = [str_repeat("\0", $n + 1)];
+        $high = $low;
+        for ($w = 1; $w < 16; $w++) {
+            $k = $w & 1 ? 0 : ($w & 2 ? 1 : ($w & 4 ? 2 : 3));
+            $low[$w] = $low[$w & ($w - 1)] ^ $shifted[$k];
+            $high[$w] = $high[$w & ($w - 1)] ^ $shifted[$k + 4];
+        }
+
+        $result = str_repeat("\0", 2 * $n);
+        for ($i = 0; $i < $n; $i++) {
+            $v = ord($y[$i]);
+            if ($v) {
+                $result = substr_replace($result, substr($result, $i, $n + 1) ^ $low[$v & 15] ^ $high[$v >> 4], $i, $n + 1);
             }
         }
 
-        return $result;
+        return ltrim($result, "\0");
     }
 
     /**
@@ -244,8 +271,9 @@ class Integer extends Base
                 return $length != 4 ?
                     self::subMultiply(str_pad($x, 4, "\0", STR_PAD_LEFT), str_pad($y, 4, "\0", STR_PAD_LEFT)) :
                     self::subMultiply($x, $y);
-            case PHP_INT_SIZE == 4 || $length > 32:
-                return self::regularPolynomialMultiply($x, $y);
+            // above 16 bytes, the window method is faster than karatsuba, whose recursion builds many short strings
+            case PHP_INT_SIZE == 4 || $length > 16:
+                return self::windowPolynomialMultiply($x, $y);
         }
 
         $m = $length >> 1;
